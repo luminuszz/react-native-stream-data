@@ -1,8 +1,26 @@
-import { makeRedirectUri, revokeAsync, startAsync } from 'expo-auth-session';
-import React, { useEffect, createContext, useContext, useState, ReactNode } from 'react';
-import { generateRandom } from 'expo-auth-session/build/PKCE';
+import { makeRedirectUri, revokeAsync, startAsync } from "expo-auth-session";
+import React, {
+  useEffect,
+  createContext,
+  useContext,
+  useState,
+  ReactNode,
+} from "react";
+import { generateRandom } from "expo-auth-session/build/PKCE";
+import { makeUrlParamsFactory } from "../utils/makeUrlParams";
 
-import { api } from '../services/api';
+import { api } from "../services/api";
+import { AuthError } from "expo-auth-session/src/Errors";
+import { TokenResponse } from "expo-auth-session/src/TokenRequest";
+
+type AuthResult = {
+  type: "error" | "success";
+  errorCode: string | null;
+  error?: AuthError | null;
+  params: { [key: string]: string };
+  authentication: TokenResponse | null;
+  url: string;
+};
 
 interface User {
   id: number;
@@ -26,84 +44,94 @@ interface AuthProviderData {
 const AuthContext = createContext({} as AuthContextData);
 
 const twitchEndpoints = {
-  authorization: 'https://id.twitch.tv/oauth2/authorize',
-  revocation: 'https://id.twitch.tv/oauth2/revoke'
+  authorization: "https://id.twitch.tv/oauth2/authorize",
+  revocation: "https://id.twitch.tv/oauth2/revoke",
 };
 
 function AuthProvider({ children }: AuthProviderData) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [user, setUser] = useState({} as User);
-  const [userToken, setUserToken] = useState('');
+  const [userToken, setUserToken] = useState("");
 
-  // get CLIENT_ID from environment variables
+  const envs = {
+    state: generateRandom(30),
+    client_id: "s8mq0e8rvenermwp7bj1sbnczqosdf",
+    response_type: "token",
+  };
 
   async function signIn() {
     try {
-      // set isLoggingIn to true
+      setIsLoggingIn(true);
 
-      // REDIRECT_URI - create OAuth redirect URI using makeRedirectUri() with "useProxy" option set to true
-      // RESPONSE_TYPE - set to "token"
-      // SCOPE - create a space-separated list of the following scopes: "openid", "user:read:email" and "user:read:follows"
-      // FORCE_VERIFY - set to true
-      // STATE - generate random 30-length string using generateRandom() with "size" set to 30
+      const authUrl = makeUrlParamsFactory(twitchEndpoints.authorization, {
+        client_id: "",
+        redirect_uri: makeRedirectUri({ useProxy: true }),
+        response_type: "token",
+        scope: encodeURI("openid user:read:email user:read:follows"),
+        force_verify: true,
+        state: envs.state,
+      });
 
-      // assemble authUrl with twitchEndpoint authorization, client_id, 
-      // redirect_uri, response_type, scope, force_verify and state
+      console.log("authUrl", authUrl);
 
-      // call startAsync with authUrl
+      const { type, params } = (await startAsync({
+        authUrl: authUrl,
+        returnUrl: "https://auth.expo.io/@luminuszz/stream-data",
+      })) as AuthResult;
 
-      // verify if startAsync response.type equals "success" and response.params.error differs from "access_denied"
-      // if true, do the following:
+      const isAproved = type === "success" && params.error !== "access_denied";
 
-        // verify if startAsync response.params.state differs from STATE
-        // if true, do the following:
-          // throw an error with message "Invalid state value"
+      if (isAproved) {
+        if (params.state !== envs.state) {
+          new Error("Invalid state value");
+        }
 
-        // add access_token to request's authorization header
+        api.defaults.headers.authorization = `Bearer ${params.access_token}`;
+      }
 
-        // call Twitch API's users route
+      const response = await api.get("/users");
 
-        // set user state with response from Twitch API's route "/users"
-        // set userToken state with response's access_token from startAsync
+      const user = response.data.data[0];
+
+      setUser(user);
+
+      setUserToken(params.access_token);
     } catch (error) {
-      // throw an error
+      console.log("error", error);
     } finally {
-      // set isLoggingIn to false
+      setIsLoggingIn(false);
     }
   }
 
   async function signOut() {
     try {
       // set isLoggingOut to true
-
       // call revokeAsync with access_token, client_id and twitchEndpoint revocation
     } catch (error) {
     } finally {
       // set user state to an empty User object
       // set userToken state to an empty string
-
       // remove "access_token" from request's authorization header
-
       // set isLoggingOut to false
     }
   }
 
   useEffect(() => {
-    // add client_id to request's "Client-Id" header
-  }, [])
+    api.defaults.headers["Client-Id"] = "";
+  }, []);
 
   return (
-    <AuthContext.Provider value={{ user, isLoggingOut, isLoggingIn, signIn, signOut }}>
-      { children }
+    <AuthContext.Provider
+      value={{ user, isLoggingOut, isLoggingIn, signIn, signOut }}
+    >
+      {children}
     </AuthContext.Provider>
-  )
+  );
 }
 
 function useAuth() {
-  const context = useContext(AuthContext);
-
-  return context;
+  return useContext(AuthContext);
 }
 
 export { AuthProvider, useAuth };
